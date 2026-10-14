@@ -258,17 +258,25 @@ def launch_in_docker(repro_path: str, port: int):
     ])
 
 
-def main(variant="buggy", issue_id=None, action: str = "deploy", port=DEFAULT_PORT, use_docker: bool = False):
+def main(sha=None, issue_id=None, action: str = "deploy", port=DEFAULT_PORT, use_docker: bool = False, variant: str = None):
     """Main deployment function for http4s.
 
+    Conforms to the Defects4REST deploy-script interface:
+    `main(sha, issue_id)` — used by `defects4rest checkout -p http4s -i <issue> --buggy|--patched --start`.
+
+    The `sha` parameter (passed by the Defects4REST CLI from the CSV's
+    `buggy_sha` / `patch_sha` column) is used to determine which published
+    http4s artifact to compile and run the reproduction server against:
+        - sha == BUGGY_SHA   → http4s 0.22.2  (last release containing the bug)
+        - sha == PATCHED_SHA → http4s 0.22.3 (first release containing the fix)
+
+    The corresponding historical git SHA is also checked out into the project
+    directory so that the user can inspect the exact buggy / patched source code.
+
     Args:
-        variant: One of {"buggy", "patched"}. Selects which http4s published
-            artifact version to compile and run the reproduction server against.
-            - "buggy"   → http4s 0.22.2  (last release containing the bug)
-            - "patched" → http4s 0.22.3 (first release containing the fix)
-            The corresponding historical git SHA is also checked out into the
-            project directory so that the user can inspect the exact buggy /
-            patched source code.
+        sha: Git commit SHA to check out (buggy or patched). When passed by
+            the Defects4REST CLI, this comes from the CSV's `buggy_sha` or
+            `patch_sha` column. If None, `variant` must be set.
         issue_id: GitHub issue number (used for logging and hooks).
         action: One of {"deploy", "clone_only"}. "clone_only" checks out the
             sources without launching the server — useful for offline inspection.
@@ -276,7 +284,26 @@ def main(variant="buggy", issue_id=None, action: str = "deploy", port=DEFAULT_PO
         use_docker: If True, run scala-cli inside a Docker container; otherwise
             run on the host. Docker is recommended for CI; the host path is
             recommended for interactive reproductions.
+        variant: Convenience override for CLI use. One of {"buggy", "patched"}.
+            If both `sha` and `variant` are set, `sha` takes precedence.
+            If only `variant` is set, the corresponding SHA is looked up.
     """
+    if sha is not None:
+        sha_lower = sha.lower()
+        if sha_lower == BUGGY_SHA.lower() or sha_lower == BUGGY_SHA[:8].lower():
+            variant = "buggy"
+        elif sha_lower == PATCHED_SHA.lower() or sha_lower == PATCHED_SHA[:8].lower():
+            variant = "patched"
+        else:
+            raise ValueError(
+                f"Unknown SHA: {sha!r}. Expected one of:\n"
+                f"  buggy   (82f8c4b90b08bd6e037b400db52f20b86d666c23)\n"
+                f"  patched (3a6175224bf96a9e2848cae706295485226590f7)"
+            )
+    elif variant is None:
+        # Default to buggy when neither sha nor variant is given.
+        variant = "buggy"
+
     if variant not in ("buggy", "patched"):
         raise ValueError(f"variant must be 'buggy' or 'patched', got: {variant!r}")
 
@@ -470,8 +497,8 @@ if __name__ == "__main__":
     variant_group.add_argument(
         "--buggy",
         action="store_const",
-        dest="variant",
-        const="buggy",
+        dest="sha",
+        const=BUGGY_SHA,
         help=(
             "Deploy the buggy version: http4s 0.22.2 (last release containing "
             "the Accept-Language wildcard parsing bug). Git checkout: 82f8c4b9... "
@@ -481,14 +508,23 @@ if __name__ == "__main__":
     variant_group.add_argument(
         "--patched",
         action="store_const",
-        dest="variant",
-        const="patched",
+        dest="sha",
+        const=PATCHED_SHA,
         help=(
             "Deploy the patched version: http4s 0.22.3 (first release containing "
             "the fix from PR #5070). Git checkout: 3a617522..."
         ),
     )
-    parser.set_defaults(variant="buggy")
+    parser.add_argument(
+        "--sha",
+        type=str,
+        default=None,
+        help=(
+            "Explicit git commit SHA to check out (alternative to --buggy/--patched). "
+            "Must be one of: 82f8c4b9... (buggy) or 3a617522... (patched)."
+        ),
+    )
+    parser.set_defaults(sha=BUGGY_SHA)
     parser.add_argument(
         "--issue-id",
         type=str,
@@ -516,7 +552,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     main(
-        variant=args.variant,
+        sha=args.sha,
         issue_id=args.issue_id,
         action=args.action,
         port=args.port,
